@@ -21,19 +21,19 @@ class YamlDumper:
                 pass
             try:
                 # Handle enum types specifically
-                print("trying enum")
+                # print("trying enum")
                 if isinstance(value, Enum):
                     retval = value.name
                     print("returning value.name " + retval)
                     return retval
 
-                print("trying datetime")
+                # print("trying datetime")
                 if isinstance(value, datetime):
                     retval = value.isoformat()
                     print("returning value.isoformat() " + retval)
                     return retval
 
-                print("trying dict")
+                # print("trying dict")
                 try:
                     retval = {k: process_value(value[k]) for k in value.keys() if not k.startswith('_')}
                     print("returning dict " + str(retval))
@@ -41,7 +41,7 @@ class YamlDumper:
                 except:
                     pass
 
-                print("trying to_dict()")
+                # print("trying to_dict()")
                 # Use to_dict method if available
                 if hasattr(value, 'to_dict') and callable(getattr(value, 'to_dict')):
                     retval = value.to_dict()
@@ -56,7 +56,7 @@ class YamlDumper:
                     # retval = {k: process_value(v) for k, v in value.__dict__.items() if not callable(v) and not k.startswith('_')}
                     # print("returning complex object " + str(retval))
 
-                print("trying list,tuple.set")
+                # print("trying list,tuple.set")
                 # Handle lists, tuples, sets
                 if isinstance(value, (list, tuple, set)):
                     retval = type(value)(process_value(v) for v in value)

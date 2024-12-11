@@ -1,4 +1,9 @@
-import logging
+import  inspect
+import  logging
+import  sys
+import  traceback
+from    typing import List, Optional
+
 
 class YamlMultilineFormatter(logging.Formatter):
     def __init__(self, fmt=None, datefmt=None):
@@ -11,18 +16,59 @@ class YamlMultilineFormatter(logging.Formatter):
             record.msg = f"{first_line} |\n  " + '\n  '.join(remaining_lines.split('\n'))
         return super().format(record)
 
-    # # Example usage
-    # CustomDetailLogger.init_formatter()  # Initialize the formatter once at the start
 
-    # logger = CustomDetailLogger(__name__)
-    # logger.debug("Single line debug message")
-    # logger.debug("Debug output:\nLine 1 of the output\nLine 2 of the output\nLine 3 of the output")
+class BreakException(Exception):
+    """Custom exception to signal a break condition."""
+    def __init__(self, message="Break condition occurred"):
+        self.message = message
+        super().__init__(self.message)
 
-import logging
+
+class DetailedException(Exception):
+    def __init__(self, message="An error occurred", frame_info=None):
+        self.message = message
+        if frame_info:
+            self.file_name, self.line_number, self.func_name, _, _ = frame_info
+        else:
+            frame = inspect.currentframe().f_back.f_back
+            self.file_name = frame.f_code.co_filename
+            self.line_number = frame.f_lineno
+            self.func_name = frame.f_code.co_name
+        self.module = self.__get_module_name()
+        super().__init__(self.message)
+
+    @classmethod
+    def raise_from_here(cls, message="An error occurred"):
+        frame = inspect.currentframe().f_back
+        frame_info = inspect.getframeinfo(frame)
+        raise cls(message, frame_info)
+
+    def __get_module_name(self):
+        module = self.file_name
+        if module.endswith('.py'):
+            module = module[:-3]  # Remove .py extension
+        return module.split('/')[-1]  # Get just the file name without path
+
+    def _from(self):
+        return self.module, self.func_name, self.file_name, self.line_number
+    
+    def _from_str(self):
+        return f"{self.module}:{self.func_name}(){{{self.file_name}#{self.line_number}}}"
+    
+    def __str__(self):
+        return (f"{self.__class__.__name__} from: {self._from_str()}>>\n{self.message}")
+
+# Example usage
+class MessageStoreHandler(logging.Handler):
+    def emit(self, record):
+        if CustomDetailLogger.message_store is not None:
+            formatted_message = self.format(record)
+            CustomDetailLogger.message_store.append(formatted_message)
+
 
 class CustomDetailLogger(logging.Logger):
-    
-    allowed_prefixes = set()
+    progress_empty = True
+    _cached_output_stream = None  # Cache for output stream
 
     def __init__(self, name, prefix="", level=logging.NOTSET):
         super().__init__(name, level)
@@ -32,89 +78,127 @@ class CustomDetailLogger(logging.Logger):
         # Create a new handler with the specific formatter
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s | %(name)s | %(levelname)s | %(message)s'))
-        # Add the handler to this logger
         self.addHandler(handler)
 
-        # Optionally, set the logger level (if you want a specific level for this logger)
         self.setLevel(level)
 
-    def set_detail_level(self, level):
-        if level > 0:
-            super().setLevel(logging.DEBUG)
-        self.detail_level = level
+    def inspect_handlers(self):
+        """Inspect handlers and determine their output streams."""
+        output_destinations = []
+        for handler in self.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                stream = handler.stream
+                if stream == sys.stdout:
+                    output_destinations.append('stdout')
+                elif stream == sys.stderr:
+                    output_destinations.append('stderr')
+                else:
+                    output_destinations.append(str(stream))
+            elif isinstance(handler, logging.FileHandler):
+                output_destinations.append(f"File: {handler.baseFilename}")
+            else:
+                output_destinations.append(f"Unknown: {type(handler).__name__}")
+        return output_destinations
 
-    @classmethod
-    def set_allowed_prefixes(cls, prefixes=""):
-        if prefixes == None or prefixes == "None" or prefixes == "none" or prefixes == "NONE":
-            prefixes = [ None ]
-        if prefixes == "":
-            prefixes = []
-        cls.allowed_prefixes = set(prefixes)
+    def get_output_stream(self):
+        """Determine and cache the appropriate output stream for progress."""
+        if CustomDetailLogger._cached_output_stream is not None:
+            return CustomDetailLogger._cached_output_stream
 
-    @classmethod
-    def add_allowed_prefix(cls, prefix):
-        cls.allowed_prefixes.add(prefix)
+        # Default to stderr if no specific handler is found
+        output_stream = sys.stderr
 
-    @classmethod
-    def remove_allowed_prefix(cls, prefix):
-        cls.allowed_prefixes.discard(prefix)
+        for handler in self.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                # Prefer stdout over stderr
+                if handler.stream == sys.stdout:
+                    output_stream = sys.stdout
+                    break
+                elif handler.stream == sys.stderr:
+                    output_stream = sys.stderr
 
-    @classmethod
-    def get_allowed_prefixes(cls):
-        return cls.allowed_prefixes
+        # Cache the result
+        CustomDetailLogger._cached_output_stream = output_stream
+        return output_stream
 
-    def _is_prefix_allowed(self):
-        # print(f"self.prefix: {self.prefix}, CustomDetailLogger.allowed_prefixes: {CustomDetailLogger.allowed_prefixes}")
-        return not CustomDetailLogger.allowed_prefixes \
-            or any(allowed_prefix in self.prefix for allowed_prefix in CustomDetailLogger.allowed_prefixes)
+    def _progress(self, log_msg: str, progress_char: str, level: int):
+        """Shared logic for progress methods."""
+        if self.getEffectiveLevel() > level:
+            return  # Only proceed if the log level is enabled
 
-    def _log_with_prefix_check(self, level, msg, *args, **kwargs):
-        if self._is_prefix_allowed():
-            self._log(level, msg, args, kwargs)
+        output_stream = self.get_output_stream()
 
-    def _format_with_prefix(self, msg, *args, **kwargs):
-        return self.prefix + msg, args, kwargs
+        if CustomDetailLogger.progress_empty:
+            # Log the message at the specified level
+            self.log(level, log_msg)
+            CustomDetailLogger.progress_empty = False  # Mark progress as started
 
+        # Print the progress character
+        output_stream.write(progress_char)
+        output_stream.flush()
+
+    def progress_debug(self, log_msg: str, progress_char: str):
+        """Logs a progress character for DEBUG level."""
+        self._progress(log_msg, progress_char, logging.DEBUG)
+
+    def progress_info(self, log_msg: str, progress_char: str):
+        """Logs a progress character for INFO level."""
+        self._progress(log_msg, progress_char, logging.INFO)
+
+    def progress_warning(self, log_msg: str, progress_char: str):
+        """Logs a progress character for WARNING level."""
+        self._progress(log_msg, progress_char, logging.WARNING)
+
+    def progress_error(self, log_msg: str, progress_char: str):
+        """Logs a progress character for ERROR level."""
+        self._progress(log_msg, progress_char, logging.ERROR)
+
+    def progress_critical(self, log_msg: str, progress_char: str):
+        """Logs a progress character for CRITICAL level."""
+        self._progress(log_msg, progress_char, logging.CRITICAL)
+
+    def _check_and_reset_progress(self):
+        """Check if progress is ongoing, print a newline, and reset."""
+        if not CustomDetailLogger.progress_empty:
+            output_stream = self.get_output_stream()
+            output_stream.write("\n")
+            output_stream.flush()
+            CustomDetailLogger.progress_empty = True
+
+    # Override log methods to handle progress resetting
     def debug(self, msg, *args, **kwargs):
-        msg, args, kwargs = self._format_with_prefix(msg, *args, **kwargs)
-        self._log_with_prefix_check(logging.DEBUG, msg, *args, **kwargs)
+        self._check_and_reset_progress()
+        super().debug(msg, *args, **kwargs)
 
     def info(self, msg, *args, **kwargs):
-        msg, args, kwargs = self._format_with_prefix(msg, *args, **kwargs)
-        self._log_with_prefix_check(logging.INFO, msg, *args, **kwargs)
+        self._check_and_reset_progress()
+        super().info(msg, *args, **kwargs)
 
     def warning(self, msg, *args, **kwargs):
-        msg, args, kwargs = self._format_with_prefix(msg, *args, **kwargs)
-        self._log_with_prefix_check(logging.WARNING, msg, *args, **kwargs)
+        self._check_and_reset_progress()
+        super().warning(msg, *args, **kwargs)
 
     def error(self, msg, *args, **kwargs):
-        msg, args, kwargs = self._format_with_prefix(msg, *args, **kwargs)
-        self._log_with_prefix_check(logging.ERROR, msg, *args, **kwargs)
+        self._check_and_reset_progress()
+        super().error(msg, *args, **kwargs)
 
     def critical(self, msg, *args, **kwargs):
-        msg, args, kwargs = self._format_with_prefix(msg, *args, **kwargs)
-        self._log_with_prefix_check(logging.CRITICAL, msg, *args, **kwargs)
+        self._check_and_reset_progress()
+        super().critical(msg, *args, **kwargs)
 
-    def debug1(self, msg, *args, **kwargs):
-        if self.detail_level >= 1:
-            self.debug(msg, *args, **kwargs)
 
-    def debug2(self, msg, *args, **kwargs):
-        if self.detail_level >= 2:
-            self.debug(msg, *args, **kwargs)
-
-    def debug3(self, msg, *args, **kwargs):
-        if self.detail_level >= 3:
-            self.debug(msg, *args, **kwargs)
-    
-    def debug_pause(self):
-        if self.getEffectiveLevel() <= logging.DEBUG:
-            input("Press Enter to continue...")
+class BreakAndLogException(DetailedException):
+    """Custom exception to signal a break condition and provide the current log as the message"""
+    @classmethod
+    def raise_from_here(cls, message: str = None):
+        frame = inspect.currentframe().f_back
+        frame_info = inspect.getframeinfo(frame)
+        log_messages = CustomDetailLogger.get_stored_messages()
+        full_message = "Break condition occurred, log:\n" + '\n'.join(log_messages) if log_messages else "Break condition occurred"
+        if message:
+            full_message += f"\nAdditional message: {message}"
+        raise cls(full_message, frame_info)
 
 logging.setLoggerClass(CustomDetailLogger)
 logging.basicConfig(format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
 
-# Example usage
-# async def cmd_specific_emote(cls, command: str, actor: Actor, input: str):
-#     logger = CustomDetailLogger(__name__, prefix="cmd_specific_emote()> ")
-#     logger.critical(f"command: {command}, actor.rid: {actor.rid}, input: {input}")
