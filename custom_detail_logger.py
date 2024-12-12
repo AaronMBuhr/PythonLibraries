@@ -1,4 +1,5 @@
 import  inspect
+import  io
 import  logging
 import  sys
 import  traceback
@@ -67,8 +68,9 @@ class MessageStoreHandler(logging.Handler):
 
 
 class CustomDetailLogger(logging.Logger):
-    progress_empty = True
-    _cached_output_stream = None  # Cache for output stream
+    _progress_empty: bool = True
+    _cached_output_stream: Optional[io.TextIOBase] = None  # Cache for output stream
+    _default_format: str = '%(asctime)s | %(name)s | %(levelname)s | %(message)s'
 
     def __init__(self, name, prefix="", level=logging.NOTSET):
         super().__init__(name, level)
@@ -77,10 +79,39 @@ class CustomDetailLogger(logging.Logger):
 
         # Create a new handler with the specific formatter
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s | %(name)s | %(levelname)s | %(message)s'))
+        handler.setFormatter(logging.Formatter(self._default_format))
         self.addHandler(handler)
 
         self.setLevel(level)
+
+    @classmethod
+    def change_default_logger(cls, new_logger_class=None, new_format=None):
+        """
+        Change the global logger class and optionally set a new format.
+        Returns a tuple: (previous_logger_class, previous_format).
+
+        Arguments:
+            new_logger_class (type): The new logger class to set. Defaults to `cls`.
+            new_format (str): The new logging format to set. If None, format is unchanged.
+        """
+        # Get the current logger class
+        previous_logger_class = logging.getLoggerClass()
+
+        # Get the current logging format if any handlers exist
+        root_logger = logging.getLogger()
+        previous_format = None
+        if root_logger.handlers:
+            # Assuming the first handler's formatter represents the current format
+            previous_format = root_logger.handlers[0].formatter._fmt
+
+        # Update the logger class if a new one is provided
+        logging.setLoggerClass(new_logger_class or cls)
+
+        # Update the logging format if a new one is provided
+        if new_format is not None:
+            logging.basicConfig(format=new_format)
+
+        return previous_logger_class, previous_format
 
     def inspect_handlers(self):
         """Inspect handlers and determine their output streams."""
@@ -128,10 +159,10 @@ class CustomDetailLogger(logging.Logger):
 
         output_stream = self.get_output_stream()
 
-        if CustomDetailLogger.progress_empty:
+        if CustomDetailLogger._progress_empty:
             # Log the message at the specified level
             self.log(level, log_msg)
-            CustomDetailLogger.progress_empty = False  # Mark progress as started
+            CustomDetailLogger._progress_empty = False  # Mark progress as started
 
         # Print the progress character
         output_stream.write(progress_char)
@@ -159,11 +190,11 @@ class CustomDetailLogger(logging.Logger):
 
     def _check_and_reset_progress(self):
         """Check if progress is ongoing, print a newline, and reset."""
-        if not CustomDetailLogger.progress_empty:
+        if not CustomDetailLogger._progress_empty:
             output_stream = self.get_output_stream()
             output_stream.write("\n")
             output_stream.flush()
-            CustomDetailLogger.progress_empty = True
+            CustomDetailLogger._progress_empty = True
 
     # Override log methods to handle progress resetting
     def debug(self, msg, *args, **kwargs):
@@ -199,6 +230,7 @@ class BreakAndLogException(DetailedException):
             full_message += f"\nAdditional message: {message}"
         raise cls(full_message, frame_info)
 
-logging.setLoggerClass(CustomDetailLogger)
-logging.basicConfig(format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
+# TODO: Remove this (now use CustomDetailLogger.change_default_logger())
+# logging.setLoggerClass(CustomDetailLogger)
+# logging.basicConfig(format='%(asctime)s | %(name)s | %(levelname)s | %(message)s')
 
